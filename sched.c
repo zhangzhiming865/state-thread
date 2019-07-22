@@ -47,6 +47,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/eventfd.h>
+#include <wordexp.h>
+#include <execinfo.h>
 #include "common.h"
 
 // #define ST_DEBUG_PRINTF(...)
@@ -123,8 +125,7 @@ _st_thread_t *get_first_thread_from_runq(_st_clist_t* l,
 		_st_clist_t *next = l->next;
 		th = _ST_THREAD_PTR(next);
 		ST_DEBUG_PRINTF("before remove l->next is %p, %p, %p, l is %p self index %d\n", l->next, l->next->next, l->next->next->next, l, self_index);
-		ST_REMOVE_LINK(next);
-		ST_DEBUG_PRINTF("delete thread %p from runq %d l->next is %p l is %p\n", th, self_index, l->next, l);
+		ST_REMOVE_LINK(next); ST_DEBUG_PRINTF("delete thread %p from runq %d l->next is %p l is %p\n", th, self_index, l->next, l);
 	}
 	st_pthread_spin_unlock(q_lock);
 	return th;
@@ -138,8 +139,7 @@ _st_thread_t *get_last_thread_from_runq(_st_clist_t* l,
 	if (l->next != l) {
 		_st_clist_t *prev = l->prev;
 		th = _ST_THREAD_PTR(prev);
-		ST_REMOVE_LINK(prev);
-		ST_DEBUG_PRINTF("delete thread %p from runq %d\n", th, self_index);
+		ST_REMOVE_LINK(prev); ST_DEBUG_PRINTF("delete thread %p from runq %d\n", th, self_index);
 	}
 	st_pthread_spin_unlock(q_lock);
 	return th;
@@ -187,10 +187,13 @@ void schedule_to_vp(int index)
 	index %= nb_worker_pthreads;
 	if (index == self_index) {
 		return;
-	}
-	ST_DEBUG_PRINTF("schedule from %d to %d\n", self_index, index);
+	} ST_DEBUG_PRINTF("schedule from %d to %d\n", self_index, index);
 	_st_thread_t *me = _st_this_thread;
+
+	_ST_DEL_THREADQ(me);
 	me->vp_index = index;
+	_ST_ADD_THREADQ(me);
+
 	_ST_ADD_SWITCHQ(me);
 	atomic_dec(&this_vp._st_active_count);
 	_ST_SWITCH_CONTEXT(me);
@@ -224,7 +227,7 @@ void interrupt_vp(int vp_index)
 	int efd = _st_the_vp(vp_index).eventfd;
 	uint64_t data = 1;
 	int ret = write(efd, &data, sizeof(data));
-	(void)ret;
+	(void) ret;
 	interrute_count++;
 }
 
@@ -244,9 +247,7 @@ int st_init_pthread()
 	ST_INIT_CLIST(&_ST_IOQ);
 	ST_INIT_CLIST(&_ST_ZOMBIEQ);
 	ST_INIT_CLIST(&_ST_SWITCHQ(self_index));
-#ifdef DEBUG
-	ST_INIT_CLIST(&_ST_THREADQ);
-#endif
+	ST_INIT_CLIST(&_ST_THREADQ(self_index));
 
 	if ((*_st_eventsys->init)() < 0)
 		return -1;
@@ -255,6 +256,7 @@ int st_init_pthread()
 	_st_this_vp.last_clock = st_utime();
 	st_pthread_spin_init(&_st_this_vp.run_q_lock);
 	st_pthread_spin_init(&_st_this_vp._sleep_q_lock);
+	st_pthread_spin_init(&_st_this_vp.thread_q_lock);
 
 	/*
 	 * Create idle thread
@@ -289,12 +291,11 @@ int st_init_pthread()
 	thread->private_data = (void **) (thread + 1);
 	thread->state = _ST_ST_RUNNING;
 	thread->flags = _ST_FL_PRIMORDIAL;
+	thread->vp_index = self_index;
 	_ST_SET_CURRENT_THREAD(thread);
 	atomic_inc(&this_vp._st_active_count);
 	_st_this_vp.main_thread = st_thread_self();
-#ifdef DEBUG
 	_ST_ADD_THREADQ(thread);
-#endif
 	return 0;
 }
 
@@ -428,9 +429,7 @@ void st_thread_exit(void *retval)
 		thread->term = NULL;
 	}
 
-#ifdef DEBUG
 	_ST_DEL_THREADQ(thread);
-#endif
 
 	if (!(thread->flags & _ST_FL_PRIMORDIAL))
 		_st_stack_free(thread->stack);
@@ -785,9 +784,7 @@ _st_thread_t *st_thread_create_vp(void *(*start)(void *arg), void *arg,
 	/* Make thread runnable */
 	atomic_inc(&the_vp(thread->vp_index)._st_active_count);
 	_ST_ADD_RUNQ(thread);
-#ifdef DEBUG
 	_ST_ADD_THREADQ(thread);
-#endif
 
 	return thread;
 }
@@ -812,15 +809,43 @@ _st_thread_t *st_thread_self(void)
 	return _ST_CURRENT_THREAD();
 }
 
-#ifdef DEBUG
-/* ARGSUSED */
-void _st_show_thread_stack(_st_thread_t *thread, const char *messg)
-{
+/* To be set from debugger */
+char _st_program_name[256];
+st_printf _st_stack_func = NULL;
 
+/* ARGSUSED */
+void _st_show_thread_stack(_st_thread_t * thread)
+{
+#define MAX_THREAD_STACK 100
+	void *buffer[MAX_THREAD_STACK];
+	int i = 0, trace_size = 0;
+	_st_stack_func("\n");
+	trace_size = backtrace(buffer, MAX_THREAD_STACK);
+	for (i = 0; i < trace_size; i++) {
+		char sys_command[256] = "";
+		char function_name[256] = "";
+		char file_line[256] = "";
+		FILE *pp;
+		memset(sys_command, 0, sizeof sys_command);
+		memset(function_name, 0, sizeof function_name);
+		memset(file_line, 0, sizeof file_line);
+		sprintf(sys_command, "addr2line %p -e %s -f", buffer[i],
+				_st_program_name);
+		if (NULL == (pp = popen(sys_command, "r"))) {
+			return;
+		}
+		char *cret = fgets(function_name, sizeof function_name, pp);
+		(void) cret;
+		cret = fgets(file_line, sizeof file_line, pp);
+		(void) cret;
+		_st_stack_func("#%02d %d.%p in %s() at %s", i, self_index, thread,
+				function_name, file_line);
+		pclose(pp);
+	}
+#undef MAX_THREAD_STACK
 }
 
-/* To be set from debugger */
-int _st_iterate_threads_flag = 0;
+#define ITERATE_FLAG(index) (st_vps[index]._st_iterate_threads_flag)
 
 void _st_iterate_threads(void)
 {
@@ -828,8 +853,9 @@ void _st_iterate_threads(void)
 	static jmp_buf orig_jb, save_jb;
 	_st_clist_t *q;
 
-	if (!_st_iterate_threads_flag) {
+	if (!ITERATE_FLAG(self_index)) {
 		if (thread) {
+			_st_stack_func("here is impossible.\n");
 			memcpy(thread->context, save_jb, sizeof(jmp_buf));
 			MD_LONGJMP(orig_jb, 1);
 		}
@@ -838,27 +864,35 @@ void _st_iterate_threads(void)
 
 	if (thread) {
 		memcpy(thread->context, save_jb, sizeof(jmp_buf));
-		_st_show_thread_stack(thread, NULL);
+		_st_show_thread_stack(thread);
 	} else {
 		if (MD_SETJMP(orig_jb)) {
-			_st_iterate_threads_flag = 0;
+			ITERATE_FLAG(self_index) = 0;
+			_st_stack_func("\n");
 			thread = NULL;
-			_st_show_thread_stack(thread, "Iteration completed");
 			return;
 		}
 		thread = _ST_CURRENT_THREAD();
-		_st_show_thread_stack(thread, "Iteration started");
+		_st_show_thread_stack(thread);
 	}
 
 	q = thread->tlink.next;
-	if (q == &_ST_THREADQ)
-	q = q->next;
-	ST_ASSERT(q != &_ST_THREADQ);
+	if (q == &_ST_THREADQ(self_index))
+		q = q->next;
+	ST_ASSERT(q != &_ST_THREADQ(self_index));
 	thread = _ST_THREAD_THREADQ_PTR(q);
 	if (thread == _ST_CURRENT_THREAD())
-	MD_LONGJMP(orig_jb, 1);
+		MD_LONGJMP(orig_jb, 1);
 	memcpy(save_jb, thread->context, sizeof(jmp_buf));
 	MD_LONGJMP(thread->context, 1);
 }
-#endif /* DEBUG */
+
+void st_print_threads_stack(const char *exeFile, st_printf new_printf)
+{
+	for (int i = 0; i < nb_worker_pthreads; i++) {
+		ITERATE_FLAG(i) = 1;
+	}
+	_st_stack_func = new_printf;
+	strcpy(_st_program_name, exeFile);
+}
 

@@ -178,9 +178,9 @@ struct _st_thread
 
 	_st_clist_t links; /* For putting on run/sleep/zombie queue */
 	_st_clist_t wait_links; /* For putting on mutex/condvar wait queue */
-#ifdef DEBUG
+
 	_st_clist_t tlink; /* For putting on thread queue */
-#endif
+
 	int vp_index; /*current vp belong to*/
 
 	st_utime_t due; /* Wakeup time when thread is sleeping */
@@ -278,9 +278,10 @@ typedef struct _st_vp
 	int io_q_size;
 	_st_clist_t zombie_q; /* zombie queue for this vp */
 	int zombie_q_size;
-#ifdef DEBUG
+
 	_st_clist_t thread_q; /* all threads of this vp */
-#endif
+	st_pthread_spinlock thread_q_lock;
+
 	int pagesize;
 
 	_st_thread_t *sleep_q; /* sleep queue for this vp */
@@ -298,6 +299,7 @@ struct st_vp_desc
 	_st_vp_t _st_vp; /* This VP */
 	pthread_t self_pthread_id;
 	int _st_active_count; /* Active thread count */
+	int _st_iterate_threads_flag;
 };
 
 #define MAX_ST_VP (16)
@@ -356,11 +358,10 @@ extern _st_eventsys_t *_st_eventsys;
 #define _ST_SWITCHQ(vp_index)			(_st_the_vp(vp_index).switching_q)
 #define _ST_RUNQ(vp_index)				(_st_the_vp(vp_index).run_q)
 #define _ST_RUNQ_LOCK(vp_index)			(_st_the_vp(vp_index).run_q_lock)
+#define _ST_THREADQ_LOCK(vp_index)		(_st_the_vp(vp_index).thread_q_lock)
 #define _ST_IOQ							(_st_this_vp.io_q)
 #define _ST_ZOMBIEQ						(_st_this_vp.zombie_q)
-#ifdef DEBUG
-#define _ST_THREADQ						(_st_this_vp.thread_q)
-#endif
+#define _ST_THREADQ(vp_index)			(_st_the_vp(vp_index).thread_q)
 
 #define _ST_PAGE_SIZE					(_st_this_vp.pagesize)
 
@@ -382,14 +383,19 @@ extern _st_eventsys_t *_st_eventsys;
 #define _ST_ADD_RUNQ(_thr)  \
 		_ST_LOCK_RUNQ(_thr); \
 		int run_q_empty = ST_CLIST_IS_EMPTY(&_ST_RUNQ(_thr->vp_index)); \
+		int need_interrupt_vp = 0; \
+		int target_vp = _thr->vp_index; \
 		_thr->state = _ST_ST_RUNNABLE; \
 		ST_DEBUG_PRINTF("self %d add thread %p to runq %d, runq empty %d\n", \
 				self_index, _thr, _thr->vp_index, run_q_empty); \
 		ST_APPEND_LINK(&(_thr)->links, &_ST_RUNQ(_thr->vp_index)); \
 		if(self_index != _thr->vp_index && run_q_empty){	\
-			interrupt_vp(_thr->vp_index);	\
+			need_interrupt_vp = 1;			\
 		}									\
-		_ST_UNLOCK_RUNQ(_thr);
+		_ST_UNLOCK_RUNQ(_thr);				\
+		if(need_interrupt_vp) {				\
+			interrupt_vp(target_vp);		\
+		}
 
 #define _ST_DEL_RUNQ(_thr)  \
 		_ST_LOCK_RUNQ(_thr); \
@@ -404,10 +410,13 @@ extern _st_eventsys_t *_st_eventsys;
 #define _ST_ADD_ZOMBIEQ(_thr)  ST_APPEND_LINK(&(_thr)->links, &_ST_ZOMBIEQ)
 #define _ST_DEL_ZOMBIEQ(_thr)  ST_REMOVE_LINK(&(_thr)->links)
 
-#ifdef DEBUG
-#define _ST_ADD_THREADQ(_thr)  ST_APPEND_LINK(&(_thr)->tlink, &_ST_THREADQ)
+#define _ST_ADD_THREADQ(_thr)  \
+	st_pthread_spin_lock(&_ST_THREADQ_LOCK(_thr->vp_index)); \
+	ST_APPEND_LINK(&(_thr)->tlink, &_ST_THREADQ(_thr->vp_index));  \
+	st_pthread_spin_unlock(&_ST_THREADQ_LOCK(_thr->vp_index));
+
 #define _ST_DEL_THREADQ(_thr)  ST_REMOVE_LINK(&(_thr)->tlink)
-#endif
+
 
 /*****************************************
  * Thread states and flags
@@ -449,10 +458,8 @@ extern _st_eventsys_t *_st_eventsys;
 #define _ST_POLLQUEUE_PTR(_qp)      \
     ((_st_pollq_t *)((char *)(_qp) - offsetof(_st_pollq_t, links)))
 
-#ifdef DEBUG
 #define _ST_THREAD_THREADQ_PTR(_qp) \
     ((_st_thread_t *)((char *)(_qp) - offsetof(_st_thread_t, tlink)))
-#endif
 
 /*****************************************
  * Constants
@@ -480,12 +487,8 @@ extern _st_eventsys_t *_st_eventsys;
  * Threads context switching
  */
 
-#ifdef DEBUG
 void _st_iterate_threads(void);
 #define ST_DEBUG_ITERATE_THREADS() _st_iterate_threads()
-#else
-#define ST_DEBUG_ITERATE_THREADS()
-#endif
 
 #ifdef ST_SWITCH_CB
 #define ST_SWITCH_OUT_CB(_thread)		\
@@ -512,14 +515,14 @@ void _st_iterate_threads(void);
 #define _ST_SWITCH_CONTEXT(_thread)       \
     ST_BEGIN_MACRO                        \
     ST_SWITCH_OUT_CB(_thread);            \
-    ST_DEBUG_PRINTF("start switch\n");  \
+    ST_DEBUG_PRINTF("start switch\n");    \
     if (!MD_SETJMP((_thread)->context)) { \
       _st_vp_schedule();                  \
     }                                     \
-	clear_switch_q();                     \
-    ST_DEBUG_PRINTF("end switch\n");  \
+    ST_DEBUG_PRINTF("end switch\n");      \
     ST_DEBUG_ITERATE_THREADS();           \
     ST_SWITCH_IN_CB(_thread);             \
+    clear_switch_q();                     \
     ST_END_MACRO
 
 /*

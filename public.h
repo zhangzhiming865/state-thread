@@ -175,10 +175,10 @@ extern int st_sendmsg(st_netfd_t fd, const struct msghdr *msg, int flags,
 		st_utime_t timeout);
 extern st_netfd_t st_open(const char *path, int oflags, mode_t mode);
 
-#ifdef DEBUG
-extern void _st_show_thread_stack(st_thread_t thread, const char *messg);
+typedef void (*st_printf)(const char *format, ...);
+extern void _st_show_thread_stack( st_thread_t thread);
 extern void _st_iterate_threads(void);
-#endif
+extern void st_print_threads_stack(const char *exeFile, st_printf);
 
 #ifdef __cplusplus
 }
