@@ -59,8 +59,6 @@ int nb_worker_pthreads;
 
 __thread int self_index;
 
-__thread _st_thread_t *_st_this_thread; /* Current thread */
-
 pthread_t schedule_thread;
 
 time_t _st_curr_time = 0; /* Current time as returned by time(2) */
@@ -188,7 +186,7 @@ void schedule_to_vp(int index)
 	if (index == self_index) {
 		return;
 	} ST_DEBUG_PRINTF("schedule from %d to %d\n", self_index, index);
-	_st_thread_t *me = _st_this_thread;
+	_st_thread_t *me = _ST_CURRENT_THREAD();
 
 	_ST_DEL_THREADQ(me);
 	me->vp_index = index;

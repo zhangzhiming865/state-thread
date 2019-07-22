@@ -300,15 +300,16 @@ struct st_vp_desc
 	pthread_t self_pthread_id;
 	int _st_active_count; /* Active thread count */
 	int _st_iterate_threads_flag;
+	_st_thread_t *_st_this_thread;
 };
 
 #define MAX_ST_VP (16)
 extern struct st_vp_desc st_vps[MAX_ST_VP];
 extern __thread int self_index;
 
-#define the_vp(index) st_vps[index]
+#define the_vp(__index__) st_vps[__index__]
 #define this_vp the_vp(self_index)
-#define _st_the_vp(index) the_vp(index)._st_vp
+#define _st_the_vp(__index__) the_vp(__index__)._st_vp
 #define _st_this_vp _st_the_vp(self_index)
 
 typedef struct _st_netfd
@@ -321,7 +322,32 @@ typedef struct _st_netfd
 	struct _st_netfd *next; /* For putting on the free list */
 } _st_netfd_t;
 
-extern __thread _st_thread_t *_st_this_thread;
+/*****************************************
+ * Current vp, thread, and event system
+ */
+
+extern _st_eventsys_t *_st_eventsys;
+
+#define _ST_CURRENT_THREAD()			(this_vp._st_this_thread)
+#define _ST_SET_CURRENT_THREAD(_thread)	(this_vp._st_this_thread = (_thread))
+#define _ST_IS_VP_IN_IDLE_THREAD(_vp_index)	(the_vp(_vp_index)._st_this_thread == _st_the_vp(_vp_index).idle_thread)
+
+#define _ST_LAST_CLOCK					(_st_this_vp.last_clock)
+
+#define _ST_SWITCHQ(_vp_index)			(_st_the_vp(_vp_index).switching_q)
+#define _ST_RUNQ(_vp_index)				(_st_the_vp(_vp_index).run_q)
+#define _ST_RUNQ_LOCK(_vp_index)		(_st_the_vp(_vp_index).run_q_lock)
+#define _ST_THREADQ_LOCK(_vp_index)		(_st_the_vp(_vp_index).thread_q_lock)
+#define _ST_IOQ							(_st_this_vp.io_q)
+#define _ST_ZOMBIEQ						(_st_this_vp.zombie_q)
+#define _ST_THREADQ(_vp_index)			(_st_the_vp(_vp_index).thread_q)
+
+#define _ST_PAGE_SIZE					(_st_this_vp.pagesize)
+
+#define _ST_SLEEPQ(_vp_index)			(_st_the_vp(_vp_index).sleep_q)
+#define _ST_SLEEPQ_SIZE(_vp_index)		(_st_the_vp(_vp_index).sleepq_size)
+
+#define _ST_VP_IDLE()					(*_st_eventsys->dispatch)()
 
 static inline void log_out_msg(const char* fun, char* fmt, ...)
 {
@@ -329,7 +355,7 @@ static inline void log_out_msg(const char* fun, char* fmt, ...)
 	struct timeval now;
 	gettimeofday(&now, NULL);
 	int len = sprintf(buf, "time %ld:%ld %d.%012lx %s() ",
-			now.tv_sec, now.tv_usec, self_index, (uint64_t)_st_this_thread, fun);
+			now.tv_sec, now.tv_usec, self_index, (uint64_t)_ST_CURRENT_THREAD(), fun);
 	va_list arglist;
 	va_start( arglist, fmt );
 	len += vsprintf(buf+len, fmt, arglist);
@@ -342,33 +368,6 @@ static inline void log_out_msg(const char* fun, char* fmt, ...)
 #else
 #define ST_DEBUG_PRINTF(msg, ...)
 #endif
-
-/*****************************************
- * Current vp, thread, and event system
- */
-
-extern __thread _st_thread_t *_st_this_thread;
-extern _st_eventsys_t *_st_eventsys;
-
-#define _ST_CURRENT_THREAD()            (_st_this_thread)
-#define _ST_SET_CURRENT_THREAD(_thread) (_st_this_thread = (_thread))
-
-#define _ST_LAST_CLOCK					(_st_this_vp.last_clock)
-
-#define _ST_SWITCHQ(vp_index)			(_st_the_vp(vp_index).switching_q)
-#define _ST_RUNQ(vp_index)				(_st_the_vp(vp_index).run_q)
-#define _ST_RUNQ_LOCK(vp_index)			(_st_the_vp(vp_index).run_q_lock)
-#define _ST_THREADQ_LOCK(vp_index)		(_st_the_vp(vp_index).thread_q_lock)
-#define _ST_IOQ							(_st_this_vp.io_q)
-#define _ST_ZOMBIEQ						(_st_this_vp.zombie_q)
-#define _ST_THREADQ(vp_index)			(_st_the_vp(vp_index).thread_q)
-
-#define _ST_PAGE_SIZE					(_st_this_vp.pagesize)
-
-#define _ST_SLEEPQ(vp_index)			(_st_the_vp(vp_index).sleep_q)
-#define _ST_SLEEPQ_SIZE(vp_index)		(_st_the_vp(vp_index).sleepq_size)
-
-#define _ST_VP_IDLE()					(*_st_eventsys->dispatch)()
 
 /*****************************************
  * vp queues operations
@@ -389,7 +388,7 @@ extern _st_eventsys_t *_st_eventsys;
 		ST_DEBUG_PRINTF("self %d add thread %p to runq %d, runq empty %d\n", \
 				self_index, _thr, _thr->vp_index, run_q_empty); \
 		ST_APPEND_LINK(&(_thr)->links, &_ST_RUNQ(_thr->vp_index)); \
-		if(self_index != _thr->vp_index && run_q_empty){	\
+		if(self_index != _thr->vp_index && run_q_empty && _ST_IS_VP_IN_IDLE_THREAD(_thr->vp_index)){	\
 			need_interrupt_vp = 1;			\
 		}									\
 		_ST_UNLOCK_RUNQ(_thr);				\
