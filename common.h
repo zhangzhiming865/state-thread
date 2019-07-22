@@ -388,7 +388,7 @@ static inline void log_out_msg(const char* fun, char* fmt, ...)
 		ST_DEBUG_PRINTF("self %d add thread %p to runq %d, runq empty %d\n", \
 				self_index, _thr, _thr->vp_index, run_q_empty); \
 		ST_APPEND_LINK(&(_thr)->links, &_ST_RUNQ(_thr->vp_index)); \
-		if(self_index != _thr->vp_index && run_q_empty && _ST_IS_VP_IN_IDLE_THREAD(_thr->vp_index)){	\
+		if(self_index != _thr->vp_index && run_q_empty){	\
 			need_interrupt_vp = 1;			\
 		}									\
 		_ST_UNLOCK_RUNQ(_thr);				\
