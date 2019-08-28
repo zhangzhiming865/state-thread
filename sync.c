@@ -147,11 +147,20 @@ _st_cond_t *st_cond_new(void)
 
 	cvar = (_st_cond_t *) calloc(1, sizeof(_st_cond_t));
 	if (cvar) {
-		ST_INIT_CLIST(&cvar->wait_q);
+		st_cond_init(cvar, sizeof(_st_cond_t));
 	}
-	pthread_spin_init(&cvar->pthread_lock, 0);
 
 	return cvar;
+}
+
+int st_cond_init(_st_cond_t *cvar, int size)
+{
+	if(size < sizeof(_st_cond_t)){
+		return -1;
+	}
+	ST_INIT_CLIST(&cvar->wait_q);
+	pthread_spin_init(&cvar->pthread_lock, 0);
+	return 0;
 }
 
 int st_cond_destroy(_st_cond_t *cvar)
@@ -166,7 +175,7 @@ int st_cond_destroy(_st_cond_t *cvar)
 	return 0;
 }
 
-int st_cond_timedwait(_st_cond_t *cvar, st_utime_t timeout)
+int st_cond_timedwait(_st_cond_t *cvar, st_utime_t timeout, _st_mutex_t* lock)
 {
 	_st_thread_t *me = _ST_CURRENT_THREAD();
 	int rv;
@@ -186,11 +195,14 @@ int st_cond_timedwait(_st_cond_t *cvar, st_utime_t timeout)
 		_ST_ADD_SLEEPQ(me, timeout);
 	pthread_spin_unlock(&cvar->pthread_lock);
 
+	if(lock){
+		st_mutex_unlock(lock);
+	}
 	_ST_SWITCH_CONTEXT(me);
+	if(lock){
+		st_mutex_lock(lock);
+	}
 
-	pthread_spin_lock(&cvar->pthread_lock);
-	ST_REMOVE_LINK(&me->wait_links);
-	pthread_spin_unlock(&cvar->pthread_lock);
 	rv = 0;
 
 	if (me->flags & _ST_FL_TIMEDOUT) {
@@ -207,25 +219,32 @@ int st_cond_timedwait(_st_cond_t *cvar, st_utime_t timeout)
 	return rv;
 }
 
-int st_cond_wait(_st_cond_t *cvar)
+int st_cond_wait(_st_cond_t *cvar, _st_mutex_t* lock)
 {
-	return st_cond_timedwait(cvar, ST_UTIME_NO_TIMEOUT);
+	return st_cond_timedwait(cvar, ST_UTIME_NO_TIMEOUT, lock);
+}
+
+int st_cond_is_empty_list(_st_cond_t * cvar)
+{
+	return ST_CLIST_IS_EMPTY(&cvar->wait_q);
 }
 
 static int _st_cond_signal(_st_cond_t *cvar, int broadcast)
 {
 	ST_DEBUG_PRINTF("start _st_cond_signal cond %p\n", cvar);
 	_st_thread_t *thread;
-	_st_clist_t *q;
+	_st_clist_t *q, *qnext;
 	pthread_spin_lock(&cvar->pthread_lock);
-	for (q = cvar->wait_q.next; q != &cvar->wait_q; q = q->next) {
+	for (q = cvar->wait_q.next, qnext = q->next; q != &cvar->wait_q; q = qnext, qnext = q->next) {
 		thread = _ST_THREAD_WAITQ_PTR(q);
 		ST_DEBUG_PRINTF("interrupt thread %p thread state is %d\n", thread, thread->state);
 		if (thread->state == _ST_ST_COND_WAIT) {
 			ST_DEBUG_PRINTF("interrupt thread %p real\n", thread);
 			_ST_DEL_SLEEPQ(thread);
 
+			ST_REMOVE_LINK(&thread->wait_links);
 			/* Make thread runnable */
+			thread->debug_waked_by = _ST_CURRENT_THREAD();
 			_ST_ADD_RUNQ(thread);
 			if (!broadcast)
 				break;
@@ -256,12 +275,22 @@ _st_mutex_t *st_mutex_new(void)
 
 	lock = (_st_mutex_t *) calloc(1, sizeof(_st_mutex_t));
 	if (lock) {
-		ST_INIT_CLIST(&lock->wait_q);
-		lock->owner = NULL;
+		st_mutex_init(lock, sizeof(_st_mutex_t));
+		_ST_ADD_MUTEXQ(lock);
 	}
-	pthread_spin_init(&lock->pthread_lock, 0);
 
 	return lock;
+}
+
+int st_mutex_init(_st_mutex_t *lock, int buf_size)
+{
+	if(buf_size < sizeof(_st_mutex_t)){
+		return -1;
+	}
+	ST_INIT_CLIST(&lock->wait_q);
+	lock->owner = NULL;
+	pthread_spin_init(&lock->pthread_lock, 0);
+	return 0;
 }
 
 int st_mutex_destroy(_st_mutex_t *lock)
@@ -270,10 +299,20 @@ int st_mutex_destroy(_st_mutex_t *lock)
 		errno = EBUSY;
 		return -1;
 	}
-
+	_ST_DEL_MUTEXQ(lock);
 	free(lock);
 
 	return 0;
+}
+
+void iterate_all_mutex(mutex_callback_t cb)
+{
+	st_pthread_spin_lock(&_ST_MUTEXQ_LOCK(0));
+	for(_st_clist_t* i = _ST_MUTEXQ(0).next; i != &_ST_MUTEXQ(0); i = i->next){
+		_st_mutex_t *mu = _ST_MUTEX_MUTEXQ_PTR(i);
+		cb(mu);
+	}
+	st_pthread_spin_unlock(&_ST_MUTEXQ_LOCK(0));
 }
 
 int st_mutex_lock(_st_mutex_t *lock)
@@ -308,10 +347,6 @@ int st_mutex_lock(_st_mutex_t *lock)
 	pthread_spin_unlock(&lock->pthread_lock);
 	_ST_SWITCH_CONTEXT(me);
 
-	pthread_spin_lock(&lock->pthread_lock);
-	ST_REMOVE_LINK(&me->wait_links);
-	pthread_spin_unlock(&lock->pthread_lock);
-
 	if ((me->flags & _ST_FL_INTERRUPT) && lock->owner != me) {
 		me->flags &= ~_ST_FL_INTERRUPT;
 		errno = EINTR;
@@ -321,10 +356,15 @@ int st_mutex_lock(_st_mutex_t *lock)
 	return 0;
 }
 
+_st_thread_t* st_mutex_get_owner(_st_mutex_t *lock)
+{
+	return lock->owner;
+}
+
 int st_mutex_unlock(_st_mutex_t *lock)
 {
 	_st_thread_t *thread;
-	_st_clist_t *q;
+	_st_clist_t *q, *qnext;
 
 	if (lock->owner != _ST_CURRENT_THREAD()) {
 		errno = EPERM;
@@ -333,11 +373,12 @@ int st_mutex_unlock(_st_mutex_t *lock)
 
 	pthread_spin_lock(&lock->pthread_lock);
 
-	for (q = lock->wait_q.next; q != &lock->wait_q; q = q->next) {
+	for (q = lock->wait_q.next, qnext = q->next; q != &lock->wait_q; q = qnext, qnext = q->next) {
 		thread = _ST_THREAD_WAITQ_PTR(q);
 		if (thread->state == _ST_ST_LOCK_WAIT) {
 			lock->owner = thread;
 			/* Make thread runnable */
+			ST_REMOVE_LINK(&thread->wait_links);
 			_ST_ADD_RUNQ(thread);
 			pthread_spin_unlock(&lock->pthread_lock);
 			return 0;

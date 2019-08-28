@@ -67,7 +67,7 @@ void* thread_fun_cond(void* arg)
 	LOG_INFO("start schedule_to_vp\n");
 	schedule_to_vp(1);
 	LOG_INFO("start st_cond_wait\n");
-	st_cond_wait(cond);
+	st_cond_wait(cond, NULL);
 	LOG_INFO("end st_cond_wait\n");
 	return NULL;
 }
@@ -94,9 +94,19 @@ void* thread_fun_interrupt(void* arg)
 	return NULL;
 }
 
+int thread_nb = 0;
+uint64_t loop_count = 100000;
+
 int main(int argc, char* argv[])
 {
-	int ret = st_init(4);
+	if(argc < 3){
+		LOG_ERROR("error: cmd <thread nb> <loop count>\n");
+		return -1;
+	}
+	thread_nb = atoi(argv[1]);
+	loop_count = atoi(argv[2]);
+
+	int ret = st_init(thread_nb);
 	if(ret != 0){
 		LOG_ERROR("error st init\n");
 		return ret;
@@ -136,12 +146,12 @@ int main(int argc, char* argv[])
 	int i = 0;
 	struct timeval start, end;
 	gettimeofday(&start, NULL);
-	while(i < 100000){
+	while(i < loop_count){
 		schedule_to_vp(i++);
 	}
 	gettimeofday(&end, NULL);
 	uint64_t usec = (end.tv_sec - start.tv_sec)*1000000 + end.tv_usec - start.tv_usec;
-	LOG_INFO("use time %ldus %ldPS\n", usec, 100000UL*1000000 / usec);
+	LOG_INFO("use time %ldus %ldPS\n", usec, loop_count*1000000 / usec);
 }
 
 

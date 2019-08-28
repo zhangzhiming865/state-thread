@@ -183,6 +183,7 @@ endif
 ifeq ($(OS), LINUX)
 EXTRA_OBJS  = $(TARGETDIR)/md.o
 SFLAGS      = -fPIC
+CFLAGS     += -std=gnu99 -g
 LDFLAGS     = -shared -soname=$(SONAME) -lc -lpthread
 OTHER_FLAGS = -Wall
 ifeq ($(shell test -f /usr/include/sys/epoll.h && echo yes), yes)
@@ -230,7 +231,7 @@ endif
 
 
 ifeq ($(BUILD), OPT)
-OTHER_FLAGS += -O
+OTHER_FLAGS += -O3
 else
 OTHER_FLAGS += -g
 DEFINES     += -DDEBUG

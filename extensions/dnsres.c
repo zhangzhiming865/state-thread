@@ -68,7 +68,7 @@
 #endif
 
 /* New in Solaris 7 */
-#if !defined(_getshort) && defined(ns_get16)
+#if !defined(_getshort)
 #define _getshort(cp) ns_get16(cp)
 #define _getlong(cp)  ns_get32(cp)
 #endif
@@ -107,12 +107,12 @@ static int parse_answer(querybuf_t *ans, int len, struct in_addr *addrs,
 	cp += n;
 	if (cp + 4 + 4 + 2 >= eoa)
 	    return -1;
-	type = _getshort(cp);
+	type = ns_get16(cp);
 	cp += 4;
 	if (type == T_A)
 	    _stx_dns_ttl = _getlong(cp);
 	cp += 4;
-	n = _getshort(cp);
+	n = ns_get16(cp);
 	cp += 2;
 	if (type == T_A) {
 	    if (n > sizeof(*addrs) || cp + n > eoa)

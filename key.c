@@ -61,7 +61,6 @@ int st_key_create(int *keyp, _st_destructor_t destructor)
 
 	*keyp = key_max++;
 	_st_destructors[*keyp] = destructor;
-
 	return 0;
 }
 

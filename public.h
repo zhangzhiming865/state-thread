@@ -83,6 +83,7 @@ typedef struct _st_netfd * st_netfd_t;
 typedef void (*st_switch_cb_t)(void);
 #endif
 
+extern int st_get_thread_vp(st_thread_t thread);
 extern void schedule_to_vp(int index);
 extern void interrupt_vp(int vp_index);
 extern int st_init(int pthread_nb);
@@ -97,6 +98,7 @@ extern st_switch_cb_t st_set_switch_in_cb(st_switch_cb_t cb);
 extern st_switch_cb_t st_set_switch_out_cb(st_switch_cb_t cb);
 #endif
 
+extern st_thread_t st_thread_get_waked_by(void);
 extern st_thread_t st_thread_self(void);
 extern void st_thread_exit(void *retval);
 extern int st_thread_join(st_thread_t thread, void **retvalp);
@@ -115,14 +117,18 @@ extern time_t st_time(void);
 extern int st_usleep(st_utime_t usecs);
 extern int st_sleep(int secs);
 extern st_cond_t st_cond_new(void);
+extern int st_cond_init(st_cond_t cvar, int size);
 extern int st_cond_destroy(st_cond_t cvar);
-extern int st_cond_timedwait(st_cond_t cvar, st_utime_t timeout);
-extern int st_cond_wait(st_cond_t cvar);
+extern int st_cond_timedwait(st_cond_t cvar, st_utime_t timeout, st_mutex_t lock);
+extern int st_cond_wait(st_cond_t cvar, st_mutex_t lock);
 extern int st_cond_signal(st_cond_t cvar);
 extern int st_cond_broadcast(st_cond_t cvar);
+extern int st_cond_is_empty_list(st_cond_t cvar);
 extern st_mutex_t st_mutex_new(void);
+extern int st_mutex_init(st_mutex_t lock, int buf_size);
 extern int st_mutex_destroy(st_mutex_t lock);
 extern int st_mutex_lock(st_mutex_t lock);
+extern st_thread_t st_mutex_get_owner(st_mutex_t lock);
 extern int st_mutex_unlock(st_mutex_t lock);
 extern int st_mutex_trylock(st_mutex_t lock);
 
@@ -176,9 +182,10 @@ extern int st_sendmsg(st_netfd_t fd, const struct msghdr *msg, int flags,
 extern st_netfd_t st_open(const char *path, int oflags, mode_t mode);
 
 typedef void (*st_printf)(const char *format, ...);
+typedef void (*st_print)(const char *buf);
 extern void _st_show_thread_stack( st_thread_t thread);
 extern void _st_iterate_threads(void);
-extern void st_print_threads_stack(const char *exeFile, st_printf);
+extern void st_print_threads_stack(const char *exeFile, st_print);
 
 #ifdef __cplusplus
 }

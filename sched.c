@@ -246,6 +246,7 @@ int st_init_pthread()
 	ST_INIT_CLIST(&_ST_ZOMBIEQ);
 	ST_INIT_CLIST(&_ST_SWITCHQ(self_index));
 	ST_INIT_CLIST(&_ST_THREADQ(self_index));
+	ST_INIT_CLIST(&_ST_MUTEXQ(self_index));
 
 	if ((*_st_eventsys->init)() < 0)
 		return -1;
@@ -255,6 +256,7 @@ int st_init_pthread()
 	st_pthread_spin_init(&_st_this_vp.run_q_lock);
 	st_pthread_spin_init(&_st_this_vp._sleep_q_lock);
 	st_pthread_spin_init(&_st_this_vp.thread_q_lock);
+	st_pthread_spin_init(&_st_this_vp.mutex_q_lock);
 
 	/*
 	 * Create idle thread
@@ -299,7 +301,7 @@ int st_init_pthread()
 
 static pthread_barrier_t init_barrier;
 
-void* worker_fun(void* arg)
+void* _st_worker_fun(void* arg)
 {
 	int ret = st_init_pthread();
 	if (ret < 0) {
@@ -311,7 +313,7 @@ void* worker_fun(void* arg)
 	return NULL;
 }
 
-void* schedule_fun(void* arg)
+void* _st_schedule_fun(void* arg)
 {
 	pthread_barrier_wait(&init_barrier);
 	while (1) {
@@ -344,15 +346,16 @@ int st_init(int pthread_nb)
 	if (ret < 0) {
 		return ret;
 	}
-	for (int i = 0; i < pthread_nb; i++) {
+	int i = 0;
+	for (i = 0; i < pthread_nb; i++) {
 		pthread_t threadid;
-		ret = pthread_create(&threadid, 0, worker_fun, (void*) (uint64_t) i);
+		ret = pthread_create(&threadid, 0, _st_worker_fun, (void*) (uint64_t) i);
 		if (ret < 0) {
 			return ret;
 		}
 	}
 
-	ret = pthread_create(&schedule_thread, 0, schedule_fun, NULL);
+	ret = pthread_create(&schedule_thread, 0, _st_schedule_fun, NULL);
 	if (ret < 0) {
 		return ret;
 	}
@@ -413,17 +416,21 @@ void st_thread_exit(void *retval)
 	atomic_dec(&this_vp._st_active_count);
 	if (thread->term) {
 		/* Put thread on the zombie queue */
+		st_mutex_lock(thread->term_mutex);
+
 		thread->state = _ST_ST_ZOMBIE;
 		_ST_ADD_ZOMBIEQ(thread);
 
 		/* Notify on our termination condition variable */
 		st_cond_signal(thread->term);
 
+		st_mutex_unlock(thread->term_mutex);
 		/* Switch context and come back later */
 		_ST_SWITCH_CONTEXT(thread);
 
 		/* Continue the cleanup */
 		st_cond_destroy(thread->term);
+		st_mutex_destroy(thread->term_mutex);
 		thread->term = NULL;
 	}
 
@@ -457,10 +464,14 @@ int st_thread_join(_st_thread_t *thread, void **retvalp)
 		return -1;
 	}
 
+	st_mutex_lock(thread->term_mutex);
 	while (thread->state != _ST_ST_ZOMBIE) {
-		if (st_cond_timedwait(term, ST_UTIME_NO_TIMEOUT) != 0)
+		if (st_cond_timedwait(term, ST_UTIME_NO_TIMEOUT, thread->term_mutex) != 0){
+			st_mutex_unlock(thread->term_mutex);
 			return -1;
+		}
 	}
+	st_mutex_unlock(thread->term_mutex);
 
 	if (retvalp)
 		*retvalp = thread->retval;
@@ -773,6 +784,7 @@ _st_thread_t *st_thread_create_vp(void *(*start)(void *arg), void *arg,
 	/* If thread is joinable, allocate a termination condition variable */
 	if (joinable) {
 		thread->term = st_cond_new();
+		thread->term_mutex = st_mutex_new();
 		if (thread->term == NULL) {
 			_st_stack_free(thread->stack);
 			return NULL;
@@ -785,6 +797,16 @@ _st_thread_t *st_thread_create_vp(void *(*start)(void *arg), void *arg,
 	_ST_ADD_THREADQ(thread);
 
 	return thread;
+}
+
+int st_get_thread_vp(_st_thread_t* thread)
+{
+	return thread->vp_index;
+}
+
+_st_thread_t *st_thread_get_waked_by(void)
+{
+	return _ST_CURRENT_THREAD()->debug_waked_by;
 }
 
 _st_thread_t *st_thread_create(void *(*start)(void *arg), void *arg,
@@ -807,9 +829,39 @@ _st_thread_t *st_thread_self(void)
 	return _ST_CURRENT_THREAD();
 }
 
+static __thread char* local_buf = NULL;
+static __thread int len_local_buf = 0;
+static __thread int size_local_buf = 0;
+
+static void local_stack_printf(const char *format, ...)
+{
+	if(!local_buf){
+		len_local_buf = 0;
+		size_local_buf = 5*1024*1024;
+		local_buf = malloc(size_local_buf);
+	}
+	va_list arglist;
+	va_start(arglist, format);
+	len_local_buf += vsprintf(local_buf+len_local_buf, format, arglist);
+	if(len_local_buf + 1024 > size_local_buf){
+		size_local_buf *= 2;
+		local_buf = realloc(local_buf, size_local_buf);
+	}
+	va_end(arglist);
+}
+
 /* To be set from debugger */
 char _st_program_name[256];
-st_printf _st_stack_func = NULL;
+st_printf _st_stack_func = local_stack_printf;
+st_print _st_stack_output_func = NULL;
+
+static void eat_new_line(char* buf)
+{
+	int len = strlen(buf);
+	if(buf[len-1] == '\n'){
+		buf[len-1] = '\0';
+	}
+}
 
 /* ARGSUSED */
 void _st_show_thread_stack(_st_thread_t * thread)
@@ -836,6 +888,7 @@ void _st_show_thread_stack(_st_thread_t * thread)
 		(void) cret;
 		cret = fgets(file_line, sizeof file_line, pp);
 		(void) cret;
+		eat_new_line(function_name);
 		_st_stack_func("#%02d %d.%p in %s() at %s", i, self_index, thread,
 				function_name, file_line);
 		pclose(pp);
@@ -843,12 +896,23 @@ void _st_show_thread_stack(_st_thread_t * thread)
 #undef MAX_THREAD_STACK
 }
 
+void mutex_callback(_st_mutex_t* mu)
+{
+	if(mu->owner) {
+		_st_stack_func("mutex %p, owner is %p", mu, mu->owner);
+		for(_st_clist_t* i = mu->wait_q.next; i != &mu->wait_q; i = i->next){
+			_st_thread_t* th = _ST_THREAD_WAITQ_PTR(i);
+			_st_stack_func("thread %p is waiting on mutex %p", th, mu);
+		}
+	}
+}
+
 #define ITERATE_FLAG(index) (st_vps[index]._st_iterate_threads_flag)
 
 void _st_iterate_threads(void)
 {
-	static _st_thread_t *thread = NULL;
-	static jmp_buf orig_jb, save_jb;
+	static __thread _st_thread_t *thread = NULL;
+	static __thread jmp_buf orig_jb, save_jb;
 	_st_clist_t *q;
 
 	if (!ITERATE_FLAG(self_index)) {
@@ -864,10 +928,17 @@ void _st_iterate_threads(void)
 		memcpy(thread->context, save_jb, sizeof(jmp_buf));
 		_st_show_thread_stack(thread);
 	} else {
+		_st_stack_func("start ####################################################################\n");
+		if(self_index == 0) {
+			iterate_all_mutex(&mutex_callback);
+		}
 		if (MD_SETJMP(orig_jb)) {
 			ITERATE_FLAG(self_index) = 0;
 			_st_stack_func("\n");
+			_st_stack_func("end ##################################################################\n");
 			thread = NULL;
+			_st_stack_output_func(local_buf);
+			free(local_buf); local_buf = NULL;
 			return;
 		}
 		thread = _ST_CURRENT_THREAD();
@@ -885,12 +956,14 @@ void _st_iterate_threads(void)
 	MD_LONGJMP(thread->context, 1);
 }
 
-void st_print_threads_stack(const char *exeFile, st_printf new_printf)
+void st_print_threads_stack(const char *exeFile, st_print new_printf)
 {
-	for (int i = 0; i < nb_worker_pthreads; i++) {
+	int i = 0;
+	_st_stack_output_func = new_printf;
+	for (i = 0; i < nb_worker_pthreads; i++) {
 		ITERATE_FLAG(i) = 1;
+		interrupt_vp(i);
 	}
-	_st_stack_func = new_printf;
 	strcpy(_st_program_name, exeFile);
 }
 

@@ -165,6 +165,14 @@ typedef struct _st_cond
 
 typedef struct _st_thread _st_thread_t;
 
+typedef struct _st_mutex
+{
+	_st_thread_t *owner; /* Current mutex owner */
+	_st_clist_t wait_q; /* Mutex wait queue */
+	pthread_spinlock_t pthread_lock;
+	_st_clist_t all_mutex_list;
+} _st_mutex_t;
+
 struct _st_thread
 {
 	int state; /* Thread's state */
@@ -191,16 +199,12 @@ struct _st_thread
 	void **private_data; /* Per thread private data */
 
 	_st_cond_t *term; /* Termination condition variable for join */
+	_st_mutex_t *term_mutex;
 
 	jmp_buf context; /* Thread's context */
-};
 
-typedef struct _st_mutex
-{
-	_st_thread_t *owner; /* Current mutex owner */
-	_st_clist_t wait_q; /* Mutex wait queue */
-	pthread_spinlock_t pthread_lock;
-} _st_mutex_t;
+	struct _st_thread *debug_waked_by;
+};
 
 typedef struct _st_pollq
 {
@@ -282,6 +286,9 @@ typedef struct _st_vp
 	_st_clist_t thread_q; /* all threads of this vp */
 	st_pthread_spinlock thread_q_lock;
 
+	_st_clist_t mutex_q;
+	st_pthread_spinlock mutex_q_lock;
+
 	int pagesize;
 
 	_st_thread_t *sleep_q; /* sleep queue for this vp */
@@ -341,6 +348,8 @@ extern _st_eventsys_t *_st_eventsys;
 #define _ST_IOQ							(_st_this_vp.io_q)
 #define _ST_ZOMBIEQ						(_st_this_vp.zombie_q)
 #define _ST_THREADQ(_vp_index)			(_st_the_vp(_vp_index).thread_q)
+#define _ST_MUTEXQ(_vp_index)			(_st_the_vp(_vp_index).mutex_q)
+#define _ST_MUTEXQ_LOCK(_vp_index)		(_st_the_vp(_vp_index).mutex_q_lock)
 
 #define _ST_PAGE_SIZE					(_st_this_vp.pagesize)
 
@@ -414,7 +423,20 @@ static inline void log_out_msg(const char* fun, char* fmt, ...)
 	ST_APPEND_LINK(&(_thr)->tlink, &_ST_THREADQ(_thr->vp_index));  \
 	st_pthread_spin_unlock(&_ST_THREADQ_LOCK(_thr->vp_index));
 
-#define _ST_DEL_THREADQ(_thr)  ST_REMOVE_LINK(&(_thr)->tlink)
+#define _ST_DEL_THREADQ(_thr)  \
+	st_pthread_spin_lock(&_ST_THREADQ_LOCK(_thr->vp_index)); \
+	ST_REMOVE_LINK(&(_thr)->tlink); \
+	st_pthread_spin_unlock(&_ST_THREADQ_LOCK(_thr->vp_index));
+
+#define _ST_ADD_MUTEXQ(_mu)  \
+	st_pthread_spin_lock(&_ST_MUTEXQ_LOCK(0));	\
+	ST_APPEND_LINK(&(_mu)->all_mutex_list, &_ST_MUTEXQ(0)); \
+	st_pthread_spin_unlock(&_ST_MUTEXQ_LOCK(0));
+
+#define _ST_DEL_MUTEXQ(_mu)  \
+	st_pthread_spin_lock(&_ST_MUTEXQ_LOCK(0));	\
+	ST_REMOVE_LINK(&(_mu)->all_mutex_list); \
+	st_pthread_spin_unlock(&_ST_MUTEXQ_LOCK(0));
 
 
 /*****************************************
@@ -460,6 +482,8 @@ static inline void log_out_msg(const char* fun, char* fmt, ...)
 #define _ST_THREAD_THREADQ_PTR(_qp) \
     ((_st_thread_t *)((char *)(_qp) - offsetof(_st_thread_t, tlink)))
 
+#define _ST_MUTEX_MUTEXQ_PTR(_qp) \
+    ((_st_mutex_t *)((char *)(_qp) - offsetof(_st_mutex_t, all_mutex_list)))
 /*****************************************
  * Constants
  */
@@ -568,7 +592,7 @@ int _st_io_init(void);
 st_utime_t st_utime(void);
 _st_cond_t *st_cond_new(void);
 int st_cond_destroy(_st_cond_t *cvar);
-int st_cond_timedwait(_st_cond_t *cvar, st_utime_t timeout);
+int st_cond_timedwait(_st_cond_t *cvar, st_utime_t timeout, _st_mutex_t* lock);
 int st_cond_signal(_st_cond_t *cvar);
 ssize_t st_read(_st_netfd_t *fd, void *buf, size_t nbyte, st_utime_t timeout);
 ssize_t st_write(_st_netfd_t *fd, const void *buf, size_t nbyte,
@@ -578,6 +602,9 @@ _st_thread_t *st_thread_create(void *(*start)(void *arg), void *arg,
 		int joinable, int stk_size);
 _st_thread_t *st_thread_create_loop(void *(*start)(void *arg), void *arg,
 		int joinable, int stk_size);
+_st_thread_t *st_thread_get_waked_by(void);
+typedef void (*mutex_callback_t)(_st_mutex_t* mu);
+void iterate_all_mutex(mutex_callback_t cb);
 
 int atomic_inc(int* nb);
 int atomic_dec(int* nb);
