@@ -203,6 +203,10 @@ int st_cond_timedwait(_st_cond_t *cvar, st_utime_t timeout, _st_mutex_t* lock)
 		st_mutex_lock(lock);
 	}
 
+	pthread_spin_lock(&cvar->pthread_lock);
+	ST_REMOVE_LINK(&me->wait_links);
+	pthread_spin_unlock(&cvar->pthread_lock);
+
 	rv = 0;
 
 	if (me->flags & _ST_FL_TIMEDOUT) {
@@ -243,6 +247,7 @@ static int _st_cond_signal(_st_cond_t *cvar, int broadcast)
 			_ST_DEL_SLEEPQ(thread);
 
 			ST_REMOVE_LINK(&thread->wait_links);
+			ST_INIT_CLIST(&thread->wait_links);
 			/* Make thread runnable */
 			thread->debug_waked_by = _ST_CURRENT_THREAD();
 			_ST_ADD_RUNQ(thread);
@@ -347,6 +352,10 @@ int st_mutex_lock(_st_mutex_t *lock)
 	pthread_spin_unlock(&lock->pthread_lock);
 	_ST_SWITCH_CONTEXT(me);
 
+	pthread_spin_lock(&lock->pthread_lock);
+	ST_REMOVE_LINK(&me->wait_links);
+	pthread_spin_unlock(&lock->pthread_lock);
+
 	if ((me->flags & _ST_FL_INTERRUPT) && lock->owner != me) {
 		me->flags &= ~_ST_FL_INTERRUPT;
 		errno = EINTR;
@@ -379,6 +388,7 @@ int st_mutex_unlock(_st_mutex_t *lock)
 			lock->owner = thread;
 			/* Make thread runnable */
 			ST_REMOVE_LINK(&thread->wait_links);
+			ST_INIT_CLIST(&thread->wait_links);
 			_ST_ADD_RUNQ(thread);
 			pthread_spin_unlock(&lock->pthread_lock);
 			return 0;

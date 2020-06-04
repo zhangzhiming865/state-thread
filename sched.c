@@ -930,7 +930,7 @@ void _st_iterate_threads(void)
 	} else {
 		_st_stack_func("start ####################################################################\n");
 		if(self_index == 0) {
-			iterate_all_mutex(&mutex_callback);
+			// iterate_all_mutex(&mutex_callback);
 		}
 		if (MD_SETJMP(orig_jb)) {
 			ITERATE_FLAG(self_index) = 0;
