@@ -186,9 +186,7 @@ SFLAGS      = -fPIC
 CFLAGS     += -std=gnu99 -g
 LDFLAGS     = -shared -soname=$(SONAME) -lc -lpthread
 OTHER_FLAGS = -Wall
-ifeq ($(shell test -f /usr/include/sys/epoll.h && echo yes), yes)
 DEFINES     += -DMD_HAVE_EPOLL
-endif
 endif
 
 ifeq ($(OS), NETBSD)
