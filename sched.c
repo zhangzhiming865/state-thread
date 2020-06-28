@@ -185,7 +185,8 @@ void schedule_to_vp(int index)
 	index %= nb_worker_pthreads;
 	if (index == self_index) {
 		return;
-	} ST_DEBUG_PRINTF("schedule from %d to %d\n", self_index, index);
+	}
+	ST_DEBUG_PRINTF("schedule from %d to %d\n", self_index, index);
 	_st_thread_t *me = _ST_CURRENT_THREAD();
 
 	_ST_DEL_THREADQ(me);
