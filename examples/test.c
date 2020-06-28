@@ -113,6 +113,12 @@ int main(int argc, char* argv[])
 	}
 	st_thread_t th;
 
+	LOG_INFO("start schedule to 1\n");
+	schedule_to_vp(1);
+	LOG_INFO("start schedule to 0\n");
+	schedule_to_vp(0);
+	LOG_INFO("end schedule to 0\n");
+
 	LOG_INFO("start create thread\n");
 	th = st_thread_create(thread_fun_schedule, NULL, 1, 0);
 	LOG_INFO("end create thread\n");

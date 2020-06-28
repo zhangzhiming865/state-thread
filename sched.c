@@ -297,6 +297,7 @@ int st_init_pthread()
 	atomic_inc(&this_vp._st_active_count);
 	_st_this_vp.main_thread = st_thread_self();
 	_ST_ADD_THREADQ(thread);
+	st_sleep(0); // let idle thread schedule for once
 	return 0;
 }
 
@@ -392,6 +393,7 @@ void *_st_idle_thread_start(void *arg)
 {
 	_st_thread_t *me = _ST_CURRENT_THREAD();
 
+	ST_DEBUG_PRINTF("this vp active count is %d\n", this_vp._st_active_count);
 	while (this_vp._st_active_count > 0) {
 		/* Idle vp till I/O is ready or the smallest timeout expired */
 		_ST_VP_IDLE();
@@ -400,7 +402,9 @@ void *_st_idle_thread_start(void *arg)
 		_st_vp_check_clock();
 
 		me->state = _ST_ST_RUNNABLE;
+		ST_DEBUG_PRINTF("xxxstart switch\n");
 		_ST_SWITCH_CONTEXT(me);
+		ST_DEBUG_PRINTF("xxxend switch\n");
 	}
 
 	ST_DEBUG_PRINTF("this vp active count is %d\n", this_vp._st_active_count);
