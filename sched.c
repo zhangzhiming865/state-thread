@@ -317,21 +317,21 @@ void* _st_schedule_fun(void* arg)
 {
 	pthread_barrier_wait(&init_barrier);
 	while (1) {
-		usleep(1000 * 1000);
+		usleep(100 * 1000 * 1000);
 	}
 	return NULL;
 }
 
 extern pthread_spinlock_t free_stack_lock;
 
-int st_init(int pthread_nb)
+int st_init(int pthread_worker_nb)
 {
 	if (nb_worker_pthreads) {
 		/* Already initialized */
 		return 0;
 	}
 
-	pthread_barrier_init(&init_barrier, NULL, pthread_nb + 2);
+	pthread_barrier_init(&init_barrier, NULL, pthread_worker_nb + 2);
 
 	/* We can ignore return value here */
 	st_set_eventsys(ST_EVENTSYS_ALT);
@@ -347,7 +347,7 @@ int st_init(int pthread_nb)
 		return ret;
 	}
 	int i = 0;
-	for (i = 0; i < pthread_nb; i++) {
+	for (i = 0; i < pthread_worker_nb; i++) {
 		pthread_t threadid;
 		ret = pthread_create(&threadid, 0, _st_worker_fun, (void*) (uint64_t) i);
 		if (ret < 0) {
