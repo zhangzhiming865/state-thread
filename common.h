@@ -310,7 +310,7 @@ struct st_vp_desc
 	_st_thread_t *_st_this_thread;
 };
 
-#define MAX_ST_VP (16)
+#define MAX_ST_VP (64)
 extern struct st_vp_desc st_vps[MAX_ST_VP];
 extern __thread int self_index;
 

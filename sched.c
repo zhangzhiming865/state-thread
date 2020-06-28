@@ -330,6 +330,9 @@ int st_init(int pthread_worker_nb)
 		/* Already initialized */
 		return 0;
 	}
+	if(pthread_worker_nb+1 > MAX_ST_VP){
+		pthread_worker_nb = MAX_ST_VP-1;
+	}
 
 	pthread_barrier_init(&init_barrier, NULL, pthread_worker_nb + 2);
 
