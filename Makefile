@@ -232,7 +232,7 @@ ifeq ($(BUILD), OPT)
 OTHER_FLAGS += -O3
 else
 OTHER_FLAGS += -g
-DEFINES     += -DDEBUG
+DEFINES     += -DDEBUG -DMD_VALGRIND
 endif
 
 ##########################

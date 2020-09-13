@@ -152,6 +152,9 @@ typedef struct _st_stack
 	char *stk_bottom; /* Lowest address of stack's usable portion */
 	char *stk_top; /* Highest address of stack's usable portion */
 	void *sp; /* Stack pointer from C's point of view */
+#ifdef MD_VALGRIND
+	unsigned long valgrind_stack_id;
+#endif
 #ifdef __ia64__
 	void *bsp; /* Register stack backing store pointer */
 #endif

@@ -49,6 +49,9 @@
 #include <sys/eventfd.h>
 #include <wordexp.h>
 #include <execinfo.h>
+#ifdef MD_VALGRIND
+#include <valgrind/valgrind.h>
+#endif
 #include "common.h"
 
 // #define ST_DEBUG_PRINTF(...)
@@ -444,8 +447,15 @@ void st_thread_exit(void *retval)
 
 	_ST_DEL_THREADQ(thread);
 
-	if (!(thread->flags & _ST_FL_PRIMORDIAL))
+#ifdef MD_VALGRIND
+	if (!(thread->flags & _ST_FL_PRIMORDIAL)) {
+		VALGRIND_STACK_DEREGISTER(thread->stack->valgrind_stack_id);
+	}
+#endif
+
+	if (!(thread->flags & _ST_FL_PRIMORDIAL)){
 		_st_stack_free(thread->stack);
+	}
 
 	/* Find another thread to run */
 	_ST_SWITCH_CONTEXT(thread);
@@ -803,6 +813,12 @@ _st_thread_t *st_thread_create_vp(void *(*start)(void *arg), void *arg,
 	atomic_inc(&the_vp(thread->vp_index)._st_active_count);
 	_ST_ADD_RUNQ(thread);
 	_ST_ADD_THREADQ(thread);
+
+#ifdef MD_VALGRIND
+	if (!(thread->flags & _ST_FL_PRIMORDIAL)) {
+		thread->stack->valgrind_stack_id = VALGRIND_STACK_REGISTER(thread->stack->stk_top, thread->stack->stk_bottom);
+	}
+#endif
 
 	return thread;
 }
