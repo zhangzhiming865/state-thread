@@ -49,6 +49,7 @@
 #include <sys/eventfd.h>
 #include <wordexp.h>
 #include <execinfo.h>
+#include <sys/prctl.h>
 #ifdef MD_VALGRIND
 #include <valgrind/valgrind.h>
 #endif
@@ -308,6 +309,7 @@ static pthread_barrier_t init_barrier;
 
 void* _st_worker_fun(void* arg)
 {
+  prctl(PR_SET_NAME, "st-worker");
 	int ret = st_init_pthread();
 	if (ret < 0) {
 		return NULL;
@@ -320,6 +322,7 @@ void* _st_worker_fun(void* arg)
 
 void* _st_schedule_fun(void* arg)
 {
+  prctl(PR_SET_NAME, "st-schedule");
 	pthread_barrier_wait(&init_barrier);
 	while (1) {
 		usleep(100 * 1000 * 1000);
@@ -331,6 +334,7 @@ extern pthread_spinlock_t free_stack_lock;
 
 int st_init(int pthread_worker_nb)
 {
+  prctl(PR_SET_NAME, "st-main");
 	if (nb_worker_pthreads) {
 		/* Already initialized */
 		return 0;
