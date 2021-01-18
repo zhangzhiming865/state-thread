@@ -334,7 +334,7 @@ extern pthread_spinlock_t free_stack_lock;
 
 int st_init(int pthread_worker_nb)
 {
-  prctl(PR_SET_NAME, "st-main");
+  // prctl(PR_SET_NAME, "st-main");
 	if (nb_worker_pthreads) {
 		/* Already initialized */
 		return 0;
