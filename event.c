@@ -259,7 +259,8 @@ ST_HIDDEN void _st_select_find_bad_fd(void)
 		}
 
 		if (notify) {
-			ST_REMOVE_LINK(&pq->links);
+			_ST_DEL_IOQ((*pq));
+			// ST_REMOVE_LINK(&pq->links);
 			pq->on_ioq = 0;
 			/*
 			 * Decrement the count of descriptors for each descriptor/event
@@ -363,7 +364,8 @@ ST_HIDDEN void _st_select_dispatch(void)
 				}
 			}
 			if (notify) {
-				ST_REMOVE_LINK(&pq->links);
+				_ST_DEL_IOQ((*pq));
+				// ST_REMOVE_LINK(&pq->links);
 				pq->on_ioq = 0;
 				/*
 				 * Decrement the count of descriptors for each descriptor/event
@@ -539,7 +541,8 @@ ST_HIDDEN void _st_poll_dispatch(void)
 			}
 			if (pds < epds) {
 				memcpy(pq->pds, pollfds, sizeof(struct pollfd) * pq->npds);
-				ST_REMOVE_LINK(&pq->links);
+				_ST_DEL_IOQ((*pq));
+				// ST_REMOVE_LINK(&pq->links);
 				pq->on_ioq = 0;
 
 				_ST_DEL_SLEEPQ(pq->thread);
@@ -901,7 +904,8 @@ ST_HIDDEN void _st_kq_dispatch(void)
 				}
 			}
 			if (notify) {
-				ST_REMOVE_LINK(&pq->links);
+				_ST_DEL_IOQ((*pq));
+				// ST_REMOVE_LINK(&pq->links);
 				pq->on_ioq = 0;
 				for (pds = pq->pds; pds < epds; pds++) {
 					osfd = pds->fd;
@@ -1257,48 +1261,100 @@ ST_HIDDEN void _st_epoll_dispatch(void)
 			}
 		}
 
-		for (q = _ST_IOQ.next; q != &_ST_IOQ; q = q->next) {
-			pq = _ST_POLLQUEUE_PTR(q);
-			notify = 0;
-			epds = pq->pds + pq->npds;
+		for (i = 0; i < nfd; i++) {
+			osfd = _st_epoll_data->evtlist[i].data.fd;
+			pq = _st_this_vp.io_q_hash[osfd];
+			while (pq) {
+				notify = 0;
+				epds = pq->pds + pq->npds;
 
-			for (pds = pq->pds; pds < epds; pds++) {
-				if (_ST_EPOLL_REVENTS(pds->fd) == 0) {
-					pds->revents = 0;
-					continue;
+				for (pds = pq->pds; pds < epds; pds++) {
+					if (_ST_EPOLL_REVENTS(pds->fd) == 0) {
+						pds->revents = 0;
+						continue;
+					}
+					osfd = pds->fd;
+					events = pds->events;
+					revents = 0;
+					if ((events & POLLIN) && (_ST_EPOLL_REVENTS(osfd) & EPOLLIN))
+						revents |= POLLIN;
+					if ((events & POLLOUT) && (_ST_EPOLL_REVENTS(osfd) & EPOLLOUT))
+						revents |= POLLOUT;
+					if ((events & POLLPRI) && (_ST_EPOLL_REVENTS(osfd) & EPOLLPRI))
+						revents |= POLLPRI;
+					if (_ST_EPOLL_REVENTS(osfd) & EPOLLERR)
+						revents |= POLLERR;
+					if (_ST_EPOLL_REVENTS(osfd) & EPOLLHUP)
+						revents |= POLLHUP;
+
+					pds->revents = revents;
+					if (revents) {
+						notify = 1;
+					}
 				}
-				osfd = pds->fd;
-				events = pds->events;
-				revents = 0;
-				if ((events & POLLIN) && (_ST_EPOLL_REVENTS(osfd) & EPOLLIN))
-					revents |= POLLIN;
-				if ((events & POLLOUT) && (_ST_EPOLL_REVENTS(osfd) & EPOLLOUT))
-					revents |= POLLOUT;
-				if ((events & POLLPRI) && (_ST_EPOLL_REVENTS(osfd) & EPOLLPRI))
-					revents |= POLLPRI;
-				if (_ST_EPOLL_REVENTS(osfd) & EPOLLERR)
-					revents |= POLLERR;
-				if (_ST_EPOLL_REVENTS(osfd) & EPOLLHUP)
-					revents |= POLLHUP;
+				if (notify) {
+					_ST_DEL_IOQ((*pq));
+					// ST_REMOVE_LINK(&pq->links);
+					pq->on_ioq = 0;
+					/*
+					 * Here we will only delete/modify descriptors that
+					 * didn't fire (see comments in _st_epoll_pollset_del()).
+					 */
+					_st_epoll_pollset_del(pq->pds, pq->npds);
 
-				pds->revents = revents;
-				if (revents) {
-					notify = 1;
+					_ST_DEL_SLEEPQ(pq->thread);
+					_ST_ADD_RUNQ(pq->thread);
+
+					pq = _st_this_vp.io_q_hash[osfd];
+				} else {
+					pq = pq->next_pollqs[search_node_fd_index(pq, osfd)];
 				}
-			}
-			if (notify) {
-				ST_REMOVE_LINK(&pq->links);
-				pq->on_ioq = 0;
-				/*
-				 * Here we will only delete/modify descriptors that
-				 * didn't fire (see comments in _st_epoll_pollset_del()).
-				 */
-				_st_epoll_pollset_del(pq->pds, pq->npds);
-
-				_ST_DEL_SLEEPQ(pq->thread);
-				_ST_ADD_RUNQ(pq->thread);
 			}
 		}
+
+//		for (q = _ST_IOQ.next; q != &_ST_IOQ; q = q->next) {
+//			pq = _ST_POLLQUEUE_PTR(q);
+//			notify = 0;
+//			epds = pq->pds + pq->npds;
+//
+//			for (pds = pq->pds; pds < epds; pds++) {
+//				if (_ST_EPOLL_REVENTS(pds->fd) == 0) {
+//					pds->revents = 0;
+//					continue;
+//				}
+//				osfd = pds->fd;
+//				events = pds->events;
+//				revents = 0;
+//				if ((events & POLLIN) && (_ST_EPOLL_REVENTS(osfd) & EPOLLIN))
+//					revents |= POLLIN;
+//				if ((events & POLLOUT) && (_ST_EPOLL_REVENTS(osfd) & EPOLLOUT))
+//					revents |= POLLOUT;
+//				if ((events & POLLPRI) && (_ST_EPOLL_REVENTS(osfd) & EPOLLPRI))
+//					revents |= POLLPRI;
+//				if (_ST_EPOLL_REVENTS(osfd) & EPOLLERR)
+//					revents |= POLLERR;
+//				if (_ST_EPOLL_REVENTS(osfd) & EPOLLHUP)
+//					revents |= POLLHUP;
+//
+//				pds->revents = revents;
+//				if (revents) {
+//					notify = 1;
+//				}
+//			}
+//			if (notify) {
+//				_ST_DEL_IOQ((*pq));
+//				// ST_REMOVE_LINK(&pq->links);
+//				pq->on_ioq = 0;
+//				/*
+//				 * Here we will only delete/modify descriptors that
+//				 * didn't fire (see comments in _st_epoll_pollset_del()).
+//				 */
+//				_st_epoll_pollset_del(pq->pds, pq->npds);
+//
+//				_ST_DEL_SLEEPQ(pq->thread);
+//				_ST_ADD_RUNQ(pq->thread);
+//			}
+//		}
 
 		for (i = 0; i < nfd; i++) {
 			/* Delete/modify descriptors that fired */

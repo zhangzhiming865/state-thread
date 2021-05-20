@@ -50,6 +50,8 @@
 #include <setjmp.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdarg.h>
 
 /* Enable assertions only if DEBUG is defined */
@@ -215,8 +217,24 @@ typedef struct _st_pollq
 	_st_thread_t *thread; /* Polling thread */
 	struct pollfd *pds; /* Array of poll descriptors */
 	int npds; /* Length of the array */
+	struct _st_pollq** next_pollqs; /* array of hash list, length equal than npds */
+	struct st_vp_desc* vp;
 	int on_ioq; /* Is it on ioq? */
 } _st_pollq_t;
+
+#define MAX_LOCAL_POLLQ_SIZE (4)
+#define ALLOC_NEXT_POLLQ(pollq) \
+		_st_pollq_t* local_pollqs[MAX_LOCAL_POLLQ_SIZE]; \
+		if(pollq->npds <= MAX_LOCAL_POLLQ_SIZE){							\
+			pollq->next_pollqs = local_pollqs;									\
+		}else{																								\
+			pollq->next_pollqs = malloc(pollq->npds * sizeof(_st_pollq_t*));	\
+		}
+
+#define FREE_NEXT_POLLQ(pollq) \
+		if(pollq->next_pollqs != local_pollqs) {	\
+			free(pollq->next_pollqs);								\
+		}
 
 typedef struct _st_eventsys_ops
 {
@@ -283,6 +301,8 @@ typedef struct _st_vp
 	_st_clist_t switching_q;
 	_st_clist_t io_q; /* io queue for this vp */
 	int io_q_size;
+	_st_pollq_t** io_q_hash; /* io q hash for each fd */
+	int io_q_hash_size;
 	_st_clist_t zombie_q; /* zombie queue for this vp */
 	int zombie_q_size;
 
@@ -303,6 +323,79 @@ typedef struct _st_vp
 	st_switch_cb_t switch_in_cb; /* called when a thread is switched in */
 #endif
 } _st_vp_t;
+
+static inline int expand_ioq_hash(_st_vp_t* vp, int fd)
+{
+	if (fd < vp->io_q_hash_size || fd < 0) {
+		return 0;
+	}
+	_st_pollq_t **ptr;
+	int n = vp->io_q_hash_size ? : 4096;
+
+	while (fd >= n) {
+		n <<= 1;
+	}
+
+	ptr = (_st_pollq_t **) realloc(vp->io_q_hash,
+			n * sizeof(_st_pollq_t *));
+	if (!ptr) {
+		return -1;
+	}
+
+	memset(ptr + vp->io_q_hash_size, 0,
+			(n - vp->io_q_hash_size) * sizeof(_st_pollq_t *));
+
+	vp->io_q_hash = ptr;
+	vp->io_q_hash_size = n;
+
+	return 0;
+}
+
+static inline void insert_ioq_hash(_st_vp_t* vp, _st_pollq_t* q)
+{
+	int i;
+	for(i = 0; i < q->npds; i++){
+		expand_ioq_hash(vp, q->pds[i].fd);
+		q->next_pollqs[i] = vp->io_q_hash[q->pds[i].fd];
+		vp->io_q_hash[q->pds[i].fd] = q;
+	}
+}
+
+static inline int search_node_fd_index(_st_pollq_t* q, int fd)
+{
+	int i;
+	for(i = 0; i < q->npds; i++){
+		if(q->pds[i].fd == fd){
+			return i;
+		}
+	}
+	abort(); // must bug, just exist
+}
+
+static inline void delete_ioq_hash(_st_vp_t* vp, _st_pollq_t* q)
+{
+	int i;
+	for(i = 0; i < q->npds; i++){
+		int done = 0;
+		int fd = q->pds[i].fd;
+		_st_pollq_t** pprev = &vp->io_q_hash[fd];
+		_st_pollq_t* current = vp->io_q_hash[fd];
+		while(current){
+			int current_fd_index = search_node_fd_index(current, fd);
+			_st_pollq_t* next = current->next_pollqs[current_fd_index];
+			if(current == q){
+				done = 1;
+				*pprev = next;
+				break;
+			}
+			pprev = &current->next_pollqs[current_fd_index];
+			current = next;
+		}
+		if(!done){
+			abort(); // must bug, just exist
+		}
+	}
+}
 
 struct st_vp_desc
 {
@@ -388,8 +481,8 @@ static inline void log_out_msg(const char* fun, char* fmt, ...)
 #define _ST_LOCK_RUNQ(_thr) st_pthread_spin_lock(&_ST_RUNQ_LOCK(_thr->vp_index))
 #define _ST_UNLOCK_RUNQ(_thr) st_pthread_spin_unlock(&_ST_RUNQ_LOCK(_thr->vp_index))
 
-#define _ST_ADD_IOQ(_pq)    ST_APPEND_LINK(&_pq.links, &_ST_IOQ)
-#define _ST_DEL_IOQ(_pq)    ST_REMOVE_LINK(&_pq.links)
+#define _ST_ADD_IOQ(_pq)    { ST_APPEND_LINK(&_pq.links, &_ST_IOQ); insert_ioq_hash(&_pq.vp->_st_vp, &_pq); }
+#define _ST_DEL_IOQ(_pq)    { ST_REMOVE_LINK(&_pq.links); delete_ioq_hash(&_pq.vp->_st_vp, &_pq); }
 
 #define _ST_ADD_RUNQ(_thr)  \
 		_ST_LOCK_RUNQ(_thr); \

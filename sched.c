@@ -89,6 +89,9 @@ int st_poll(struct pollfd *pds, int npds, st_utime_t timeout)
 	pq.npds = npds;
 	pq.thread = me;
 	pq.on_ioq = 1;
+	pq.vp = &st_vps[self_index];
+	ALLOC_NEXT_POLLQ((&pq));
+
 	_ST_ADD_IOQ(pq);
 	if (timeout != ST_UTIME_NO_TIMEOUT)
 		_ST_ADD_SLEEPQ(me, timeout);
@@ -108,6 +111,7 @@ int st_poll(struct pollfd *pds, int npds, st_utime_t timeout)
 				n++;
 		}
 	}
+	FREE_NEXT_POLLQ((&pq));
 
 	if (me->flags & _ST_FL_INTERRUPT) {
 		me->flags &= ~_ST_FL_INTERRUPT;
