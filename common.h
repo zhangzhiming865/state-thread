@@ -355,7 +355,10 @@ static inline void insert_ioq_hash(_st_vp_t* vp, _st_pollq_t* q)
 {
 	int i;
 	for(i = 0; i < q->npds; i++){
-		expand_ioq_hash(vp, q->pds[i].fd);
+		int ret = expand_ioq_hash(vp, q->pds[i].fd);
+		if(ret < 0){
+		  abort(); // no mem, and just exit
+		}
 		q->next_pollqs[i] = vp->io_q_hash[q->pds[i].fd];
 		vp->io_q_hash[q->pds[i].fd] = q;
 	}
